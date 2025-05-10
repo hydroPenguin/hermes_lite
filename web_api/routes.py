@@ -1,11 +1,8 @@
-
-from flask import Blueprint, render_template, request, jsonify, redirect, url_for
-from flask import current_app as app # Import the current app
+from flask import Blueprint, render_template, request, jsonify
+from sqlalchemy.orm import scoped_session, sessionmaker
+from extensions import db
 from models import CommandExecution
 from tasks import execute_command
-from sqlalchemy.orm import scoped_session
-from sqlalchemy.orm import sessionmaker
-from database import db # Import the SQLAlchemy database object
 
 main = Blueprint('main', __name__)
 

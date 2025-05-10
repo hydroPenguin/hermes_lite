@@ -1,22 +1,23 @@
-# models.py
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.sql import func
-import enum
+# web_api/models.py
+from sqlalchemy import Enum, Text, String, Integer, DateTime, func
+from extensions import db
 
-Base = declarative_base()
-
-class CommandExecution(Base):
+class CommandExecution(db.Model):
     __tablename__ = 'command_executions'
 
-    id = Column(Integer, primary_key=True)
-    command_name = Column(String(255), nullable=False)
-    target_host = Column(String(255), nullable=False)
-    user = Column(String(255), nullable=False)  # Add user tracking
-    start_time = Column(DateTime, server_default=func.now())
-    end_time = Column(DateTime, nullable=True)
-    status = Column(Enum("pending", "running", "success", "failure", name="execution_status"), default="pending")
-    output = Column(Text, nullable=True)  # Store final output
-    exit_code = Column(Integer, nullable=True)
-    error = Column(Text, nullable=True) # Store error messages
-
+    id           = db.Column(Integer, primary_key=True)
+    command_name = db.Column(String(255), nullable=False)
+    target_host  = db.Column(String(255), nullable=False)
+    user         = db.Column(String(255), nullable=False)
+    start_time   = db.Column(DateTime, server_default=func.now())
+    end_time     = db.Column(DateTime, nullable=True)
+    status       = db.Column(
+                     Enum(
+                       "pending", "running", "success", "failure",
+                       name="execution_status"
+                     ),
+                     default="pending"
+                   )
+    output       = db.Column(Text, nullable=True)
+    exit_code    = db.Column(Integer, nullable=True)
+    error        = db.Column(Text, nullable=True)

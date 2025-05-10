@@ -1,56 +1,39 @@
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO
-from celery import Celery
 import os
+from flask import Flask
+from extensions import db, socketio, celery
+from routes import main as main_blueprint
+from database import init_db  # Add this import
 
 # Initialize Flask
 def create_app():
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = 'your_secret_key'  # Change this!
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///./data/hermes_lite.db')
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False # silence warning
-    # Initialize database
-    db.init_app(app)
-    with app.app_context():
-        db.create_all()  # Create tables if they don't exist
-    # Register blueprints
-    from routes import main as main_blueprint
-    app.register_blueprint(main_blueprint)
-
-    return app
-
-# Initialize SQLAlchemy
-db = SQLAlchemy()
-# Initialize SocketIO
-socketio = SocketIO()
-
-# Create Flask App
-app = create_app()
-
-# Initialize SocketIO with the Flask app
-socketio.init_app(app,  async_mode='eventlet') # Use eventlet
-
-# Initialize Celery
-def init_celery(app):
-    celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
-    celery.config_from_object(app.config)
-    celery.conf.update(
-        {
-            "worker_tmp_dir": "/tmp",  # Needed for some tasks
-            "worker_log_format": "[%(asctime)s: %(levelname)s] %(message)s",
-            "worker_task_log_format": "[%(asctime)s: %(levelname)s] %(message)s",
-        }
+    app.config.from_mapping(
+        SECRET_KEY='your_secret_key',
+        SQLALCHEMY_DATABASE_URI=(
+            f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__),'..', 'data', 'hermes_lite.db'))}"
+        ),
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        CELERY_BROKER_URL=os.getenv('CELERY_BROKER_URL')
     )
+
+    db.init_app(app)
+    init_db(app)
+    socketio.init_app(app)
+
+    # tie celery to Flask config
+    celery.conf.update(app.config)
+
     class ContextTask(celery.Task):
         def __call__(self, *args, **kwargs):
             with app.app_context():
                 return self.run(*args, **kwargs)
     celery.Task = ContextTask
-    return celery
 
-celery = init_celery(app)
+    # register routes
+    app.register_blueprint(main_blueprint)
+    return app
+
+app = create_app()
 
 if __name__ == '__main__':
-    #  Use socketio.run
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)
