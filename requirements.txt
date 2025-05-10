@@ -1,0 +1,6 @@
+Flask==3.0.3 # A recent version of Flask
+requests==2.32.3 # Though not strictly needed by agent, good to have for consistency or future use
+SQLAlchemy==2.0.30  # Recent version
+celery[rabbitmq]==5.3.6 #  Use redis or rabbitmq
+eventlet==0.33.3  # For Socket.IO and Celery concurrency
+flask_socketio==5.4.0
