@@ -1,0 +1,107 @@
+# hermes_lite/docker-compose.yml
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: "rabbitmq:3.13-management-alpine"
+    container_name: hermes_rabbitmq
+    ports:
+      - "5672:5672"  # AMQP port
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq/
+    environment:
+      - RABBITMQ_DEFAULT_USER=user
+      - RABBITMQ_DEFAULT_PASS=password
+    networks:
+      - hermes_network
+
+  web:
+    build:
+      context: ./web_api
+    container_name: hermes_web_api
+    ports:
+      - "5000:5000" # Flask app port
+    volumes:
+      - ./web_api:/app # Mount app code for live reload
+      - ./data:/app/data # Mount data directory for SQLite DB
+      - ./agent:/app/agent # Make agent code accessible if web needs to know about it (e.g. list commands)
+    depends_on:
+      - rabbitmq
+    environment:
+      - FLASK_ENV=development
+      - FLASK_APP=app.py # Explicitly set FLASK_APP
+      - CELERY_BROKER_URL=amqp://user:password@rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=db+sqlite:///data/hermes_lite.db
+      - DATABASE_URL=sqlite:///data/hermes_lite.db
+      - API_KEY=SUPER_SECRET_API_KEY # Simple auth
+    networks:
+      - hermes_network
+    # Ensure Flask reloads on code changes. Default is `flask run`.
+    # For production, you'd use a proper WSGI server like Gunicorn.
+    command: flask run --host=0.0.0.0 --reload
+
+  worker:
+    build:
+      context: ./web_api # Worker uses the same environment as the web_api
+    container_name: hermes_worker
+    # Celery command: celery -A <module_name>.<celery_instance_name> worker -l <loglevel>
+    command: celery -A app.celery_app worker -l info -P eventlet # Added -P eventlet for Windows compatibility if running Docker on Windows
+    volumes:
+      - ./web_api:/app # Mount app code
+      - ./data:/app/data # Mount data directory for SQLite DB
+      - ./agent:/app/agent # Make agent code accessible if worker needs it
+    depends_on:
+      - rabbitmq
+      # - web # Not strictly necessary for worker to depend on web, but ensures web might init DB first
+    environment:
+      - CELERY_BROKER_URL=amqp://user:password@rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=db+sqlite:///data/hermes_lite.db
+      - DATABASE_URL=sqlite:///data/hermes_lite.db
+      - PYTHONUNBUFFERED=1 # For Celery logs
+    networks:
+      - hermes_network
+
+  target_host_alpha:
+    build:
+      # Context is the directory containing the Dockerfile
+      context: ./target_host_alpha
+      # args: # If you needed to pass build args
+      #   AGENT_FILES_SOURCE: ../agent # Example if copying from outside context
+    container_name: hermes_target_alpha
+    volumes:
+      # This volume mount is crucial. It makes the local ./agent directory
+      # available inside the container at /agent_files.
+      # The agent.py script and predefined_commands will be run from here.
+      - ./agent:/agent_files
+    ports:
+      - "9001:9000" # Expose agent port: host_port:container_agent_port
+    environment:
+      - AGENT_PORT=9000 # Agent will listen on this port inside the container
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hermes_network
+    # No command override needed, CMD is in Dockerfile
+
+  target_host_beta:
+    build:
+      context: ./target_host_beta
+    container_name: hermes_target_beta
+    volumes:
+      - ./agent:/agent_files
+    ports:
+      - "9002:9000" # Different host port for the second agent
+    environment:
+      - AGENT_PORT=9000
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hermes_network
+    # No command override needed, CMD is in Dockerfile
+
+volumes:
+  rabbitmq_data:
+  # data_volume: # Not explicitly needed if using bind mount to ./data
+
+networks:
+  hermes_network:
+    driver: bridge
