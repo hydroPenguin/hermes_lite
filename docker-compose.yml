@@ -37,23 +37,19 @@ services:
       - API_KEY=SUPER_SECRET_API_KEY # Simple auth
     networks:
       - hermes_network
-    # Ensure Flask reloads on code changes. Default is `flask run`.
-    # For production, you'd use a proper WSGI server like Gunicorn.
     command: flask run --host=0.0.0.0 --reload
 
   worker:
     build:
       context: ./web_api # Worker uses the same environment as the web_api
     container_name: hermes_worker
-    # Celery command: celery -A <module_name>.<celery_instance_name> worker -l <loglevel>
-    command: celery -A app.celery_app worker -l info -P eventlet # Added -P eventlet for Windows compatibility if running Docker on Windows
+    command: celery -A app.celery_app worker -l info -P eventlet
     volumes:
       - ./web_api:/app # Mount app code
       - ./data:/app/data # Mount data directory for SQLite DB
       - ./agent:/app/agent # Make agent code accessible if worker needs it
     depends_on:
       - rabbitmq
-      # - web # Not strictly necessary for worker to depend on web, but ensures web might init DB first
     environment:
       - CELERY_BROKER_URL=amqp://user:password@rabbitmq:5672//
       - CELERY_RESULT_BACKEND=db+sqlite:///data/hermes_lite.db
@@ -64,15 +60,13 @@ services:
 
   target_host_alpha:
     build:
-      # Context is the directory containing the Dockerfile
-      context: ./target_host_alpha
-      # args: # If you needed to pass build args
-      #   AGENT_FILES_SOURCE: ../agent # Example if copying from outside context
+      context: . # Build from the project root
+      dockerfile: ./target_host_alpha/Dockerfile # Specify path to Dockerfile
     container_name: hermes_target_alpha
     volumes:
-      # This volume mount is crucial. It makes the local ./agent directory
-      # available inside the container at /agent_files.
-      # The agent.py script and predefined_commands will be run from here.
+      # This volume mount is crucial for development. It makes the local ./agent directory
+      # available inside the container at /agent_files, overriding what was COPYied into the image.
+      # The agent.py script and predefined_commands will be run from this mount.
       - ./agent:/agent_files
     ports:
       - "9001:9000" # Expose agent port: host_port:container_agent_port
@@ -85,7 +79,8 @@ services:
 
   target_host_beta:
     build:
-      context: ./target_host_beta
+      context: . # Build from the project root
+      dockerfile: ./target_host_beta/Dockerfile # Specify path to Dockerfile
     container_name: hermes_target_beta
     volumes:
       - ./agent:/agent_files
@@ -100,7 +95,6 @@ services:
 
 volumes:
   rabbitmq_data:
-  # data_volume: # Not explicitly needed if using bind mount to ./data
 
 networks:
   hermes_network:
