@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-wheel-metadata/
+.eggs/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Docker
+docker-compose.override.yml
+
+# Data files
+data/*.db
+data/*.log
+# Keep the data directory, but ignore its contents for now
+# If you want to commit an empty .gitkeep file in data/, add !data/.gitkeep
+
+# IDE specific
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Celery
+celerybeat-schedule
