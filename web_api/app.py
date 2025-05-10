@@ -10,7 +10,7 @@ def create_app():
     app.config.from_mapping(
         SECRET_KEY='your_secret_key',
         SQLALCHEMY_DATABASE_URI=(
-            f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__),'..', 'data', 'hermes_lite.db'))}"
+            f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__),'.', 'data', 'hermes_lite.db'))}"
         ),
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         CELERY_BROKER_URL=os.getenv('CELERY_BROKER_URL')

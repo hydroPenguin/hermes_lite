@@ -4,3 +4,4 @@ SQLAlchemy==2.0.40  # Recent version
 celery[rabbitmq]==5.3.6 #  Use redis or rabbitmq
 flask_socketio==5.4.0
 flask_sqlalchemy==3.1.1 #Use a supported version.
+eventlet==0.39.1

@@ -19,6 +19,8 @@ docker-compose.override.yml
 # Data files
 data/*.db
 data/*.log
+web_api/data/*.db
+web_api/data/*.log
 # Keep the data directory, but ignore its contents for now
 # If you want to commit an empty .gitkeep file in data/, add !data/.gitkeep
 
