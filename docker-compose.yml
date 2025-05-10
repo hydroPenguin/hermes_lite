@@ -19,9 +19,10 @@ services:
   web:
     build:
       context: ./web_api
+      dockerfile: Dockerfile  # Add this line
     container_name: hermes_web_api
     ports:
-      - "5000:5000" # Flask app port
+      - "5001:5000" # Flask app port
     volumes:
       - ./web_api:/app # Mount app code for live reload
       - ./data:/app/data # Mount data directory for SQLite DB
@@ -42,6 +43,7 @@ services:
   worker:
     build:
       context: ./web_api # Worker uses the same environment as the web_api
+      dockerfile: Dockerfile  # Add this line
     container_name: hermes_worker
     command: celery -A app.celery_app worker -l info -P eventlet
     volumes:
