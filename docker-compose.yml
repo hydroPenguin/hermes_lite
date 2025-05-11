@@ -17,28 +17,21 @@ services:
       - hermes_network
 
   web:
-    build:
-      context: ./web_api
-      dockerfile: Dockerfile  # Add this line
-    container_name: hermes_web_api
+    build: ./web_api
     ports:
-      - "5001:5000" # Flask app port
+      - "5000:5000"
     volumes:
-      - ./web_api:/app # Mount app code for live reload
-      - ./data:/app/data # Mount data directory for SQLite DB
-      - ./agent:/app/agent # Make agent code accessible if web needs to know about it (e.g. list commands)
-    depends_on:
-      - rabbitmq
+      - ./web_api:/app
+      - web_data:/app/data
     environment:
+      - FLASK_APP=app.py
       - FLASK_ENV=development
-      - FLASK_APP=app.py # Explicitly set FLASK_APP
-      - CELERY_BROKER_URL=amqp://user:password@rabbitmq:5672//
-      - CELERY_RESULT_BACKEND=db+sqlite:///data/hermes_lite.db
-      - DATABASE_URL=sqlite:///data/hermes_lite.db
-      - API_KEY=SUPER_SECRET_API_KEY # Simple auth
-    networks:
-      - hermes_network
-    command: flask run --host=0.0.0.0 --reload
+      - JWT_SECRET_KEY=your_jwt_secret_key
+      - SSH_USERNAME=demo_user
+      - SSH_PASSWORD=demo_password
+    depends_on:
+      - target_host_alpha
+      - target_host_beta
 
   worker:
     build:
@@ -61,43 +54,23 @@ services:
       - hermes_network
 
   target_host_alpha:
-    build:
-      context: . # Build from the project root
-      dockerfile: ./target_host_alpha/Dockerfile # Specify path to Dockerfile
-    container_name: hermes_target_alpha
-    volumes:
-      # This volume mount is crucial for development. It makes the local ./agent directory
-      # available inside the container at /agent_files, overriding what was COPYied into the image.
-      # The agent.py script and predefined_commands will be run from this mount.
-      - ./agent:/agent_files
-    ports:
-      - "9001:9000" # Expose agent port: host_port:container_agent_port
-    environment:
-      - AGENT_PORT=9000 # Agent will listen on this port inside the container
-      - PYTHONUNBUFFERED=1
+    build: ./target_host_alpha
+    hostname: alpha
     networks:
-      - hermes_network
-    # No command override needed, CMD is in Dockerfile
+      - target_network
 
   target_host_beta:
-    build:
-      context: . # Build from the project root
-      dockerfile: ./target_host_beta/Dockerfile # Specify path to Dockerfile
-    container_name: hermes_target_beta
-    volumes:
-      - ./agent:/agent_files
-    ports:
-      - "9002:9000" # Different host port for the second agent
-    environment:
-      - AGENT_PORT=9000
-      - PYTHONUNBUFFERED=1
+    build: ./target_host_beta
+    hostname: beta
     networks:
-      - hermes_network
-    # No command override needed, CMD is in Dockerfile
+      - target_network
 
 volumes:
   rabbitmq_data:
+  web_data:
 
 networks:
   hermes_network:
+    driver: bridge
+  target_network:
     driver: bridge

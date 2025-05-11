@@ -1,11 +1,206 @@
 <!-- web_api/templates/index.html -->
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Hermes Lite</title>
-</head>
-<body>
-    <h1>Hello from Hermes Lite!</h1>
-</body>
-</html>
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <form id="commandForm">
+                    <div class="mb-3">
+                        <label for="command" class="form-label">Command</label>
+                        <select class="form-select" id="command" name="command" required>
+                            <option value="">Select a command...</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="host" class="form-label">Target Host</label>
+                        <select class="form-select" id="host" name="host" required>
+                            <option value="">Select a host...</option>
+                        </select>
+                    </div>
+                    <div id="parameters"></div>
+                    <button type="submit" class="btn btn-primary">Execute</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Command Output</h5>
+            </div>
+            <div class="card-body">
+                <pre id="output" class="bg-dark text-light p-3" style="height: 400px; overflow-y: auto;"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Recent Executions</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Command</th>
+                                <th>Host</th>
+                                <th>User</th>
+                                <th>Status</th>
+                                <th>Start Time</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="executionsList"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Load commands and hosts
+    fetch('/api/commands')
+        .then(response => response.json())
+        .then(data => {
+            const commandSelect = document.getElementById('command');
+            data.commands.forEach(cmd => {
+                const option = document.createElement('option');
+                option.value = cmd.name;
+                option.textContent = `${cmd.name} - ${cmd.description}`;
+                commandSelect.appendChild(option);
+            });
+        });
+
+    fetch('/api/hosts')
+        .then(response => response.json())
+        .then(hosts => {
+            const hostSelect = document.getElementById('host');
+            hosts.forEach(host => {
+                const option = document.createElement('option');
+                option.value = host.hostname;
+                option.textContent = host.hostname;
+                hostSelect.appendChild(option);
+            });
+        });
+
+    // Handle command selection
+    document.getElementById('command').addEventListener('change', function(e) {
+        const commandName = e.target.value;
+        if (!commandName) return;
+
+        fetch('/api/commands')
+            .then(response => response.json())
+            .then(data => {
+                const command = data.commands.find(cmd => cmd.name === commandName);
+                const parametersDiv = document.getElementById('parameters');
+                parametersDiv.innerHTML = '';
+
+                command.required_params.forEach(param => {
+                    const div = document.createElement('div');
+                    div.className = 'mb-3';
+                    div.innerHTML = `
+                        <label for="${param.name}" class="form-label">${param.name}</label>
+                        <input type="${param.type === 'integer' ? 'number' : 'text'}" 
+                               class="form-control" 
+                               id="${param.name}" 
+                               name="${param.name}"
+                               value="${param.default || ''}"
+                               required>
+                    `;
+                    parametersDiv.appendChild(div);
+                });
+            });
+    });
+
+    // Handle form submission
+    document.getElementById('commandForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const data = {
+            command_name: formData.get('command'),
+            target_host: formData.get('host'),
+            parameters: {}
+        };
+
+        // Collect parameters
+        const command = document.getElementById('command').value;
+        fetch('/api/commands')
+            .then(response => response.json())
+            .then(commands => {
+                const cmd = commands.commands.find(c => c.name === command);
+                cmd.required_params.forEach(param => {
+                    data.parameters[param.name] = formData.get(param.name);
+                });
+
+                // Execute command
+                fetch('/api/commands/execute', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    },
+                    body: JSON.stringify(data)
+                })
+                .then(response => response.json())
+                .then(result => {
+                    document.getElementById('output').textContent = '';
+                    loadExecutions();
+                });
+            });
+    });
+
+    // Load recent executions
+    function loadExecutions() {
+        fetch('/api/executions')
+            .then(response => response.json())
+            .then(executions => {
+                const tbody = document.getElementById('executionsList');
+                tbody.innerHTML = '';
+                executions.forEach(exec => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${exec.id}</td>
+                        <td>${exec.command_name}</td>
+                        <td>${exec.target_host}</td>
+                        <td>${exec.user}</td>
+                        <td><span class="badge bg-${exec.status === 'success' ? 'success' : 
+                                                   exec.status === 'failure' ? 'danger' : 
+                                                   exec.status === 'running' ? 'primary' : 'secondary'}">${exec.status}</span></td>
+                        <td>${new Date(exec.start_time).toLocaleString()}</td>
+                        <td>
+                            <button class="btn btn-sm btn-info" onclick="viewOutput(${exec.id})">View</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            });
+    }
+
+    // Initialize WebSocket connection
+    const socket = io();
+    socket.on('command_output', function(data) {
+        const output = document.getElementById('output');
+        output.textContent += data.output + '\n';
+        output.scrollTop = output.scrollHeight;
+    });
+
+    // Load initial data
+    loadExecutions();
+});
+</script>
+{% endblock %}

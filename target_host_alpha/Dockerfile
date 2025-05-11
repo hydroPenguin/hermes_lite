@@ -1,34 +1,30 @@
 # target_host_alpha/Dockerfile
-FROM python:3.9-alpine AS base
+FROM ubuntu:22.04
 
-# Set working directory
-WORKDIR /app
+# Install SSH server and other utilities
+RUN apt-get update && apt-get install -y \
+    openssh-server \
+    curl \
+    htop \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY agent/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
-# COPY /agent_files/requirements.txt /app/agent_requirements.txt
-# RUN pip install --no-cache-dir -r /app/agent_requirements.txt
+# Configure SSH
+RUN mkdir /var/run/sshd
+RUN echo 'root:demo_password' | chpasswd
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
-# COPY /agent_files/agent.py /app/agent.py
-# COPY /agent_files/predefined_commands /app/predefined_commands/
-COPY agent/agent.py /app/agent.py
-COPY agent/predefined_commands /app/predefined_commands/
+# Create a demo user
+RUN useradd -m -s /bin/bash demo_user
+RUN echo 'demo_user:demo_password' | chpasswd
 
-# Environment variable for the agent's port (can be overridden in docker-compose.yml)
-ENV AGENT_PORT=9000
-# ENV FLASK_APP=agent.py
-# For flask run, though we run directly with python
-ENV PYTHONUNBUFFERED=1
-# Ensures print statements and logs are sent directly to terminal
+# Create some demo log files
+RUN mkdir -p /var/log/demo
+RUN echo "This is a demo log file" > /var/log/demo/app.log
+RUN echo "Another log entry" >> /var/log/demo/app.log
 
-# Expose the port the agent will listen on
-EXPOSE 9000
+# Expose SSH port
+EXPOSE 22
 
-# Command to run the agent
-# We adjust PREDEFINED_COMMANDS_DIR in agent.py to /app/predefined_commands if we copy them here.
-# However, the agent.py currently expects /agent_files/.
-# For simplicity with the docker-compose volume mount, we'll rely on /agent_files.
-# The CMD will be to run the agent.py located in /agent_files.
-# The WORKDIR for the agent.py process will be /agent_files
-WORKDIR /agent_files
-CMD ["python", "agent.py"]
+# Start SSH server
+CMD ["/usr/sbin/sshd", "-D"]
