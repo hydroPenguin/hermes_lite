@@ -2,7 +2,7 @@ import subprocess
 import time
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.sql import func
-from extensions import celery, db, socketio
+from extensions import celery_app as celery, db, socketio
 from models import CommandExecution
 
 @celery.task(bind=True)

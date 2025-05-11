@@ -43,9 +43,9 @@ services:
   worker:
     build:
       context: ./web_api # Worker uses the same environment as the web_api
-      dockerfile: Dockerfile  # Add this line
+#      dockerfile: Dockerfile  # Add this line
     container_name: hermes_worker
-    command: celery -A app.celery_app worker -l info -P eventlet
+    command: celery -A extensions.celery_app worker -l info
     volumes:
       - ./web_api:/app # Mount app code
       - ./data:/app/data # Mount data directory for SQLite DB
