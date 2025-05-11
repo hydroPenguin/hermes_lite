@@ -36,3 +36,6 @@ web_api/data/*.log
 
 # Celery
 celerybeat-schedule
+
+# MISC
+.DS_Store
