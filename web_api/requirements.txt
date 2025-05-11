@@ -1,7 +1,11 @@
-Flask==3.0.3 # A recent version of Flask
-requests==2.32.3 # Though not strictly needed by agent, good to have for consistency or future use
-SQLAlchemy==2.0.40  # Recent version
-celery[rabbitmq]==5.3.6 #  Use redis or rabbitmq
-flask_socketio==5.4.0
-flask_sqlalchemy==3.1.1 #Use a supported version.
-eventlet==0.39.1
+Flask==2.3.3
+Flask-SQLAlchemy==3.1.1
+Flask-SocketIO==5.3.6
+Flask-JWT-Extended==4.5.3
+celery==5.3.4
+paramiko==3.3.1
+PyYAML==6.0.1
+python-dotenv==1.0.0
+Werkzeug==2.3.7
+SQLAlchemy==2.0.21
+eventlet==0.33.3

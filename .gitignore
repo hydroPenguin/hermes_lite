@@ -32,6 +32,7 @@ web_api/data/*.log
 *.njsproj
 *.sln
 *.sw?
+.cursor/
 
 # Celery
 celerybeat-schedule

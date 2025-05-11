@@ -1,0 +1,37 @@
+commands:
+  - name: system_info
+    description: Get system information
+    command: "uname -a && df -h && free -m"
+    timeout: 30
+    allowed_host_groups: ["all"]
+    required_params: []
+
+  - name: process_list
+    description: List running processes
+    command: "ps aux"
+    timeout: 30
+    allowed_host_groups: ["all"]
+    required_params: []
+
+  - name: tail_log
+    description: Tail a log file
+    command: "tail -n {{lines}} {{log_path}}"
+    timeout: 300
+    allowed_host_groups: ["all"]
+    required_params:
+      - name: lines
+        type: integer
+        default: 100
+      - name: log_path
+        type: string
+        description: "Path to the log file"
+
+  - name: disk_usage
+    description: Check disk usage
+    command: "df -h {{path}}"
+    timeout: 30
+    allowed_host_groups: ["all"]
+    required_params:
+      - name: path
+        type: string
+        default: "/" 
