@@ -2,22 +2,9 @@
 version: '3.8'
 
 services:
-  rabbitmq:
-    image: "rabbitmq:3.13-management-alpine"
-    container_name: hermes_rabbitmq
-    ports:
-      - "5672:5672"  # AMQP port
-      - "15672:15672" # Management UI
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq/
-    environment:
-      - RABBITMQ_DEFAULT_USER=user
-      - RABBITMQ_DEFAULT_PASS=password
-    networks:
-      - hermes_network
-
   web:
     build: ./web_api
+    container_name: hermes_web
     ports:
       - "5000:5000"
     volumes:
@@ -29,45 +16,35 @@ services:
       - JWT_SECRET_KEY=your_jwt_secret_key
       - SSH_USERNAME=demo_user
       - SSH_PASSWORD=demo_password
+      - DATABASE_URL=sqlite:///data/hermes_lite.db
+    networks:
+      - hermes_network
+      - target_network
     depends_on:
       - target_host_alpha
       - target_host_beta
 
-  worker:
-    build:
-      context: ./web_api # Worker uses the same environment as the web_api
-#      dockerfile: Dockerfile  # Add this line
-    container_name: hermes_worker
-    command: celery -A extensions.celery_app worker -l info
-    volumes:
-      - ./web_api:/app # Mount app code
-      - ./data:/app/data # Mount data directory for SQLite DB
-      - ./agent:/app/agent # Make agent code accessible if worker needs it
-    depends_on:
-      - rabbitmq
-    environment:
-      - CELERY_BROKER_URL=amqp://user:password@rabbitmq:5672//
-      - CELERY_RESULT_BACKEND=db+sqlite:///data/hermes_lite.db
-      - DATABASE_URL=sqlite:///data/hermes_lite.db
-      - PYTHONUNBUFFERED=1 # For Celery logs
-    networks:
-      - hermes_network
-
   target_host_alpha:
     build: ./target_host_alpha
+    container_name: hermes_alpha
     hostname: alpha
     networks:
       - target_network
+    ports:
+      - "2222:22"  # Expose SSH port with a different host port
 
   target_host_beta:
     build: ./target_host_beta
+    container_name: hermes_beta
     hostname: beta
     networks:
       - target_network
+    ports:
+      - "2223:22"  # Expose SSH port with a different host port
 
 volumes:
-  rabbitmq_data:
   web_data:
+    driver: local
 
 networks:
   hermes_network:
