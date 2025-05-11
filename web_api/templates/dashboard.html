@@ -20,76 +20,214 @@
             height: 400px;
             margin-bottom: 20px;
         }
+        .hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div class="container-fluid">
-        <h1>Command Execution Dashboard</h1>
+        <div class="d-flex justify-content-between align-items-center mt-3 mb-4">
+            <h1>Command Execution Dashboard</h1>
+            <div>
+                <a href="/" class="btn btn-primary me-2">Home</a>
+                <button id="logout-btn" class="btn btn-secondary">Logout</button>
+            </div>
+        </div>
 
-        <div id="status-chart" class="table-container"></div>
+        <div id="auth-alert" class="alert alert-warning hidden">
+            Please log in to access this dashboard.
+            <a href="/" class="btn btn-link">Go to Login</a>
+        </div>
 
-        <div class="table-responsive table-container">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Command</th>
-                        <th>Target Host</th>
-                        <th>User</th>
-                        <th>Start Time</th>
-                        <th>End Time</th>
-                        <th>Status</th>
-                        <th>Exit Code</th>
-                        <th>Output</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for execution in executions %}
-                    <tr>
-                        <td>{{ execution.id }}</td>
-                        <td>{{ execution.command_name }}</td>
-                        <td>{{ execution.target_host }}</td>
-                        <td>{{ execution.user }}</td>
-                        <td>{{ execution.start_time }}</td>
-                        <td>{{ execution.end_time }}</td>
-                        <td>{{ execution.status }}</td>
-                        <td>{{ execution.exit_code }}</td>
-                        <td><a href="/output/{{ execution.id }}" target="_blank">View Output</a></td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div id="dashboard-content">
+            <div id="status-chart" class="table-container"></div>
+
+            <div class="table-responsive table-container">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Command</th>
+                            <th>Target Host</th>
+                            <th>User</th>
+                            <th>Start Time</th>
+                            <th>End Time</th>
+                            <th>Status</th>
+                            <th>Exit Code</th>
+                            <th>Output</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for execution in executions %}
+                        <tr>
+                            <td>{{ execution.id }}</td>
+                            <td>{{ execution.command_name }}</td>
+                            <td>{{ execution.target_host }}</td>
+                            <td>{{ execution.user }}</td>
+                            <td>{{ execution.start_time }}</td>
+                            <td>{{ execution.end_time }}</td>
+                            <td>{{ execution.status }}</td>
+                            <td>{{ execution.exit_code }}</td>
+                            <td><a href="/output/{{ execution.id }}" class="view-output" data-id="{{ execution.id }}">View Output</a></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for viewing output -->
+    <div class="modal fade" id="outputModal" tabindex="-1" aria-labelledby="outputModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="outputModalLabel">Command Output</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <pre id="output-content" style="white-space: pre-wrap;"></pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
-        // JavaScript to render the ECharts chart
-        const executions = {{ executions|tojson }}; // Pass data from Flask to JS
-        const statusCounts = {};
-        executions.forEach(execution => {
-            statusCounts[execution.status] = (statusCounts[execution.status] || 0) + 1;
+        // Helper function to get JWT token from localStorage
+        function getToken() {
+            return localStorage.getItem('auth_token');
+        }
+        
+        // Check if user is authenticated
+        function isAuthenticated() {
+            return getToken() !== null;
+        }
+        
+        // Handle authentication
+        document.addEventListener('DOMContentLoaded', function() {
+            const authAlert = document.getElementById('auth-alert');
+            const dashboardContent = document.getElementById('dashboard-content');
+            
+            if (!isAuthenticated()) {
+                authAlert.classList.remove('hidden');
+                dashboardContent.style.display = 'none';
+            } else {
+                authAlert.classList.add('hidden');
+                dashboardContent.style.display = 'block';
+                
+                try {
+                    const token = getToken();
+                    const payload = JSON.parse(atob(token.split('.')[1]));
+                    const isAdmin = payload.is_admin;
+                    const username = payload.username;
+                    
+                    // If not admin, only show user's own executions
+                    if (!isAdmin) {
+                        document.querySelectorAll('tbody tr').forEach(row => {
+                            const userCell = row.querySelector('td:nth-child(4)');
+                            if (userCell && userCell.textContent.trim() !== username) {
+                                row.style.display = 'none';
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error('Error parsing token', e);
+                }
+                
+                // Configure output view links to use token
+                document.querySelectorAll('.view-output').forEach(link => {
+                    link.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        const executionId = this.getAttribute('data-id');
+                        
+                        fetch(`/output/${executionId}`, {
+                            headers: {
+                                'Authorization': 'Bearer ' + getToken()
+                            }
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            document.getElementById('output-content').textContent = data.output || 'No output available';
+                            new bootstrap.Modal(document.getElementById('outputModal')).show();
+                        })
+                        .catch(error => {
+                            alert('Error fetching output');
+                            console.error(error);
+                        });
+                    });
+                });
+                
+                // Logout button
+                document.getElementById('logout-btn').addEventListener('click', function() {
+                    localStorage.removeItem('auth_token');
+                    window.location.href = '/';
+                });
+                
+                // Render ECharts chart
+                renderChart();
+            }
         });
+        
+        // Function to render the ECharts chart
+        function renderChart() {
+            const executionsData = {{ executions|tojson }}; // Pass data from Flask to JS
+            
+            // Filter executions based on user role
+            let filteredExecutions = executionsData;
+            if (isAuthenticated()) {
+                try {
+                    const token = getToken();
+                    const payload = JSON.parse(atob(token.split('.')[1]));
+                    const isAdmin = payload.is_admin;
+                    const username = payload.username;
+                    
+                    // If not admin, only show user's own executions
+                    if (!isAdmin) {
+                        filteredExecutions = executionsData.filter(exe => exe.user === username);
+                        
+                        // Also hide other users' executions from the table
+                        document.querySelectorAll('tbody tr').forEach(row => {
+                            const userCell = row.querySelector('td:nth-child(4)');
+                            if (userCell && userCell.textContent.trim() !== username) {
+                                row.style.display = 'none';
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error('Error parsing token', e);
+                }
+            }
+            
+            const statusCounts = {};
+            filteredExecutions.forEach(execution => {
+                statusCounts[execution.status] = (statusCounts[execution.status] || 0) + 1;
+            });
 
-        const chart = echarts.init(document.getElementById('status-chart'));
-        const option = {
-            title: {
-                text: 'Command Execution Status'
-            },
-            tooltip: {},
-            legend: {
-                data: Object.keys(statusCounts)
-            },
-            xAxis: {
-                data: Object.keys(statusCounts)
-            },
-            yAxis: {},
-            series: [{
-                name: 'Status',
-                type: 'bar',
-                data: Object.values(statusCounts)
-            }]
-        };
-        chart.setOption(option);
+            const chart = echarts.init(document.getElementById('status-chart'));
+            const option = {
+                title: {
+                    text: 'Command Execution Status'
+                },
+                tooltip: {},
+                legend: {
+                    data: Object.keys(statusCounts)
+                },
+                xAxis: {
+                    data: Object.keys(statusCounts)
+                },
+                yAxis: {},
+                series: [{
+                    name: 'Status',
+                    type: 'bar',
+                    data: Object.values(statusCounts)
+                }]
+            };
+            chart.setOption(option);
+        }
     </script>
 </body>
 </html>
