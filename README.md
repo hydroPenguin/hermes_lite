@@ -26,7 +26,7 @@ Hermes Lite allows engineers to remotely execute predefined Linux commands on sp
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/hermes_lite.git
+git clone https://github.com/hydroPenguin/hermes_lite
 cd hermes_lite
 ```
 
