@@ -69,29 +69,11 @@
                             <td>{{ execution.end_time }}</td>
                             <td>{{ execution.status }}</td>
                             <td>{{ execution.exit_code }}</td>
-                            <td><a href="/output/{{ execution.id }}" class="view-output" data-id="{{ execution.id }}">View Output</a></td>
+                            <td><a href="/output/{{ execution.id }}">View Output</a></td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- Modal for viewing output -->
-    <div class="modal fade" id="outputModal" tabindex="-1" aria-labelledby="outputModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="outputModalLabel">Command Output</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <pre id="output-content" style="white-space: pre-wrap;"></pre>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                </div>
             </div>
         </div>
     </div>
@@ -138,29 +120,6 @@
                     console.error('Error parsing token', e);
                 }
                 
-                // Configure output view links to use token
-                document.querySelectorAll('.view-output').forEach(link => {
-                    link.addEventListener('click', function(e) {
-                        e.preventDefault();
-                        const executionId = this.getAttribute('data-id');
-                        
-                        fetch(`/output/${executionId}`, {
-                            headers: {
-                                'Authorization': 'Bearer ' + getToken()
-                            }
-                        })
-                        .then(response => response.json())
-                        .then(data => {
-                            document.getElementById('output-content').textContent = data.output || 'No output available';
-                            new bootstrap.Modal(document.getElementById('outputModal')).show();
-                        })
-                        .catch(error => {
-                            alert('Error fetching output');
-                            console.error(error);
-                        });
-                    });
-                });
-                
                 // Logout button
                 document.getElementById('logout-btn').addEventListener('click', function() {
                     localStorage.removeItem('auth_token');
@@ -188,14 +147,6 @@
                     // If not admin, only show user's own executions
                     if (!isAdmin) {
                         filteredExecutions = executionsData.filter(exe => exe.user === username);
-                        
-                        // Also hide other users' executions from the table
-                        document.querySelectorAll('tbody tr').forEach(row => {
-                            const userCell = row.querySelector('td:nth-child(4)');
-                            if (userCell && userCell.textContent.trim() !== username) {
-                                row.style.display = 'none';
-                            }
-                        });
                     }
                 } catch (e) {
                     console.error('Error parsing token', e);

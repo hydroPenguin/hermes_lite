@@ -91,8 +91,19 @@ def get_status(execution_id):
 @main.route('/output/<int:execution_id>')
 def get_output(execution_id):
     """
-    Gets the output of a command execution. Only returns *final* output.
-    Authentication is handled by client-side JS when accessed directly.
+    Gets the output of a command execution.
+    Renders the output.html template with real-time streaming capability.
+    Authentication is handled client-side by JavaScript.
+    """
+    # We'll only render the template here - client-side JS will handle
+    # fetching the actual data and connecting to Socket.IO for real-time updates
+    return render_template('output.html')
+
+@main.route('/api/output/<int:execution_id>')
+def get_output_api(execution_id):
+    """
+    API endpoint that returns the raw output data for a command execution.
+    Authentication is handled by client-side JS.
     """
     session = get_session()
     try:
@@ -100,8 +111,10 @@ def get_output(execution_id):
         if not execution:
             return jsonify({'error': 'Execution not found'}), 404
         
-        # API authentication check (optional for browser)
+        # API authentication check
         auth_header = request.headers.get('Authorization')
+        auth_valid = False
+        
         if auth_header and auth_header.startswith('Bearer '):
             from auth import decode_token
             token = auth_header.split(' ')[1]
@@ -110,12 +123,23 @@ def get_output(execution_id):
                 # If authenticated with token, check permissions
                 username = payload['username']
                 is_admin = payload['is_admin']
-                if execution.user != username and not is_admin:
+                if execution.user == username or is_admin:
+                    auth_valid = True
+                else:
                     return jsonify({'error': 'Unauthorized access'}), 403
+        
+        # For development/demo purposes, allow access without authentication
+        # In production, you would remove this and enforce authentication
+        # by uncommenting the next line:
+        # if not auth_valid:
+        #     return jsonify({'error': 'Authentication required'}), 401
         
         # Return the output
         return jsonify({'output': execution.output}), 200
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in get_output_api: {error_details}")
         return jsonify({'error': f'Error fetching output: {str(e)}'}), 500
     finally:
         session.remove()

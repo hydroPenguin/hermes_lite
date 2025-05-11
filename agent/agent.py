@@ -1,7 +1,11 @@
 # agent/agent.py
 import subprocess
 import os
-from flask import Flask, request, jsonify
+import time
+import threading
+import queue
+import json
+from flask import Flask, request, jsonify, Response, stream_with_context
 
 app = Flask(__name__)
 
@@ -27,6 +31,7 @@ def execute_command():
 
     command_name = data['command_name']
     params = data.get('params', []) # Optional parameters for the script
+    stream_output = data.get('stream_output', False) # Whether to stream real-time output
 
     # Security: Construct the full path and ensure it's within the predefined directory
     script_path = os.path.join(PREDEFINED_COMMANDS_DIR, command_name)
@@ -50,28 +55,27 @@ def execute_command():
         # Continue, as it might already be executable or run via sh
 
     # Construct the command to execute.
-    # We explicitly call 'sh' for .sh files for better control and portability.
-    # This also helps if the +x bit wasn't set correctly.
     if command_name.endswith(".sh"):
         full_command = ['/bin/sh', normalized_script_path] + params
     else:
-        # For other types of executables, you might need different handling
-        # For now, we assume .sh or direct executables that are on PATH or have +x
         full_command = [normalized_script_path] + params
 
-
     app.logger.info(f"Executing command: {' '.join(full_command)}")
-
+    
+    # For all shell scripts or when explicitly requested, use streaming
+    if command_name.endswith(".sh") or stream_output:
+        return stream_command_output(full_command, command_name)
+    
+    # For non-shell commands, use the standard execution approach
     try:
         # Execute the command
-        # Using Popen for better control over streams if needed in future (e.g. streaming output)
         process = subprocess.Popen(
             full_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True # Decodes stdout/stderr to strings
         )
-        stdout, stderr = process.communicate(timeout=60) # Add a timeout
+        stdout, stderr = process.communicate(timeout=300) # Add a timeout
         exit_code = process.returncode
 
         app.logger.info(f"Command '{command_name}' completed with exit code {exit_code}")
@@ -103,6 +107,124 @@ def execute_command():
     except Exception as e:
         app.logger.error(f"Error executing command '{command_name}': {str(e)}")
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
+def stream_command_output(command, command_name):
+    """
+    Stream command output in real-time using a generator function.
+    """
+    def generate():
+        process = None
+        try:
+            # Set environment variables to prevent buffering
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'
+            
+            # Start the process with unbuffered output
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=0,  # Unbuffered
+                env=env
+            )
+            
+            # Queue for collecting output
+            output_queue = queue.Queue()
+            collected_stdout = []
+            collected_stderr = []
+            
+            # Thread function to read output streams
+            def read_output(stream, output_list, stream_name):
+                for line in iter(stream.readline, ''):
+                    timestamp = time.strftime("%H:%M:%S")
+                    formatted_line = f"[{timestamp}] [{stream_name}] {line.rstrip()}"
+                    output_list.append(line)
+                    output_queue.put(formatted_line)
+                stream.close()
+            
+            # Start threads to read stdout and stderr
+            stdout_thread = threading.Thread(
+                target=read_output, 
+                args=(process.stdout, collected_stdout, "STDOUT"),
+                daemon=True
+            )
+            stderr_thread = threading.Thread(
+                target=read_output, 
+                args=(process.stderr, collected_stderr, "STDERR"),
+                daemon=True
+            )
+            
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            # Track all emitted lines for final output
+            all_emitted_lines = []
+            
+            # Send initial message to confirm streaming has started
+            initial_message = f"[{time.strftime('%H:%M:%S')}] [INFO] Starting execution of '{command_name}'..."
+            all_emitted_lines.append(initial_message)
+            yield initial_message + "\n"
+            
+            # Flag to track if we're showing "waiting" messages
+            shown_waiting = False
+            last_output_time = time.time()
+            
+            # Yield available output lines
+            while process.poll() is None or not output_queue.empty():
+                try:
+                    line = output_queue.get(timeout=0.1)
+                    all_emitted_lines.append(line)
+                    yield line + "\n"
+                    last_output_time = time.time()
+                    shown_waiting = False
+                except queue.Empty:
+                    # If it's been more than 3 seconds since last output and process is still running
+                    if time.time() - last_output_time > 3 and process.poll() is None and not shown_waiting:
+                        waiting_msg = f"[{time.strftime('%H:%M:%S')}] [INFO] Still waiting for output..."
+                        all_emitted_lines.append(waiting_msg)
+                        yield waiting_msg + "\n"
+                        shown_waiting = True
+                    
+                    # Send an empty line occasionally as a heartbeat
+                    if process.poll() is None:
+                        yield " \n"  # Space + newline keeps connection alive but doesn't display
+                    time.sleep(0.5)
+            
+            # Wait for process to complete and threads to finish
+            stdout_thread.join(timeout=2)
+            stderr_thread.join(timeout=2)
+            
+            # Send final status
+            exit_code = process.returncode
+            final_status = f"[{time.strftime('%H:%M:%S')}] [INFO] Command '{command_name}' completed with exit code {exit_code}"
+            all_emitted_lines.append(final_status)
+            yield final_status + "\n"
+            
+            # After streaming, send the complete data as JSON
+            complete_data = {
+                "command": command_name,
+                "stdout": "\n".join(all_emitted_lines),  # Include all formatted output
+                "raw_stdout": "".join(collected_stdout),  # Also include raw output
+                "stderr": "".join(collected_stderr),
+                "exit_code": exit_code
+            }
+            
+            # Send JSON data with a special marker
+            yield f"JSON_COMPLETE:{json.dumps(complete_data)}\n"
+            
+        except Exception as e:
+            app.logger.error(f"Error in streaming command: {str(e)}")
+            if process and process.poll() is None:
+                process.kill()
+            error_msg = f"[ERROR] Exception during execution: {str(e)}"
+            yield error_msg + "\n"
+            yield f"JSON_COMPLETE:{json.dumps({'command': command_name, 'stdout': error_msg, 'stderr': str(e), 'exit_code': -1})}\n"
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/plain'
+    )
 
 if __name__ == '__main__':
     app.logger.info(f"Starting Hermes Agent on port {AGENT_PORT}...")

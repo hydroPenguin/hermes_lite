@@ -14,6 +14,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY agent/agent.py /app/agent.py
 COPY agent/predefined_commands /app/predefined_commands/
 
+# Set executable permissions on all shell scripts in predefined_commands
+RUN find /app/predefined_commands -name "*.sh" -type f -exec chmod +x {} \;
+
 # Environment variable for the agent's port (can be overridden in docker-compose.yml)
 ENV AGENT_PORT=9000
 # ENV FLASK_APP=agent.py

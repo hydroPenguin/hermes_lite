@@ -1,4 +1,4 @@
-# target_host_alpha/Dockerfile
+# target_host_beta/Dockerfile
 FROM python:3.9-alpine AS base
 
 # Set working directory
@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # COPY /agent_files/predefined_commands /app/predefined_commands/
 COPY agent/agent.py /app/agent.py
 COPY agent/predefined_commands /app/predefined_commands/
+
+# Set executable permissions on all shell scripts in predefined_commands
+RUN find /app/predefined_commands -name "*.sh" -type f -exec chmod +x {} \;
 
 # Environment variable for the agent's port (can be overridden in docker-compose.yml)
 ENV AGENT_PORT=9000

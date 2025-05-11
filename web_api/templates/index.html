@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hermes Lite</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"/>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
     <style>
         .container {
             margin-top: 50px;
@@ -20,6 +21,29 @@
         }
         .hidden {
             display: none;
+        }
+        .status-streaming {
+            color: #0d6efd;
+            font-weight: bold;
+        }
+        .status-success {
+            color: #198754;
+            font-weight: bold;
+        }
+        .status-failure {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .live-output {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+            margin-top: 15px;
         }
     </style>
 </head>
@@ -83,6 +107,7 @@
                             <select class="form-control" id="command-name" required>
                                 <option value="list_files.sh">List Files</option>
                                 <option value="say_hello.sh">Say Hello</option>
+                                <option value="long_running_task.sh">Long Running Task</option>
                             </select>
                         </div>
                         <div class="mb-3">
@@ -119,22 +144,68 @@
     </div>
     
     <script>
-        // Helper function to store JWT token in localStorage
+        let socket;
+        let currentExecutionId;
+        
+        function connectSocketIO() {
+            if (isAuthenticated() && !socket) {
+                socket = io('/realtime');
+                
+                socket.on('execution_update', function(data) {
+                    if (data.execution_id == currentExecutionId) {
+                        updateExecutionStatus(data);
+                    }
+                });
+                
+                socket.on('execution_complete', function(data) {
+                    if (data.execution_id == currentExecutionId) {
+                        document.getElementById('result-status').textContent = data.status;
+                        document.getElementById('result-status').className = 'status-' + data.status;
+                        const liveOutput = document.getElementById('live-output');
+                        liveOutput.innerHTML += `\n[Completed] Execution finished with status: ${data.status}, exit code: ${data.exit_code}`;
+                        liveOutput.scrollTop = liveOutput.scrollHeight;
+                    }
+                });
+                
+                socket.on('execution_output', function(data) {
+                    if (data.execution_id == currentExecutionId) {
+                        showElement('live-output-container');
+                        
+                        const liveOutput = document.getElementById('live-output');
+                        liveOutput.innerHTML += data.output_line + '\n';
+                        liveOutput.scrollTop = liveOutput.scrollHeight;
+                    }
+                });
+                
+                socket.on('execution_error', function(data) {
+                    if (data.execution_id == currentExecutionId) {
+                        document.getElementById('result-status').textContent = 'Error';
+                        document.getElementById('result-status').className = 'status-failure';
+                        const liveOutput = document.getElementById('live-output');
+                        liveOutput.innerHTML += `\n[ERROR] ${data.error}`;
+                        liveOutput.scrollTop = liveOutput.scrollHeight;
+                    }
+                });
+            }
+        }
+        
+        function updateExecutionStatus(data) {
+            document.getElementById('result-status').textContent = data.status;
+            document.getElementById('result-status').className = 'status-' + data.status;
+        }
+        
         function setToken(token) {
             localStorage.setItem('auth_token', token);
         }
         
-        // Helper function to get JWT token from localStorage
         function getToken() {
             return localStorage.getItem('auth_token');
         }
         
-        // Helper function to check if user is authenticated
         function isAuthenticated() {
             return getToken() !== null;
         }
         
-        // Helper function to show/hide elements
         function showElement(id) {
             document.getElementById(id).classList.remove('hidden');
         }
@@ -143,14 +214,14 @@
             document.getElementById(id).classList.add('hidden');
         }
         
-        // Show login or app based on authentication status
         function updateUI() {
             if (isAuthenticated()) {
                 hideElement('login-container');
                 hideElement('register-container');
                 showElement('app-container');
                 
-                // Parse JWT token to get username
+                connectSocketIO();
+                
                 try {
                     const token = getToken();
                     const payload = JSON.parse(atob(token.split('.')[1]));
@@ -162,28 +233,29 @@
                 showElement('login-container');
                 hideElement('register-container');
                 hideElement('app-container');
+                
+                if (socket) {
+                    socket.disconnect();
+                    socket = null;
+                }
             }
         }
         
-        // Add event listeners when document is loaded
         document.addEventListener('DOMContentLoaded', function() {
             updateUI();
             
-            // Show register form
             document.getElementById('show-register').addEventListener('click', function(e) {
                 e.preventDefault();
                 hideElement('login-container');
                 showElement('register-container');
             });
             
-            // Show login form
             document.getElementById('show-login').addEventListener('click', function(e) {
                 e.preventDefault();
                 hideElement('register-container');
                 showElement('login-container');
             });
             
-            // Login form submission
             document.getElementById('login-form').addEventListener('submit', function(e) {
                 e.preventDefault();
                 
@@ -213,7 +285,6 @@
                 });
             });
             
-            // Register form submission
             document.getElementById('register-form').addEventListener('submit', function(e) {
                 e.preventDefault();
                 
@@ -247,19 +318,15 @@
                 });
             });
             
-            // Add dashboard button click handler
             document.getElementById('dashboard-btn').addEventListener('click', function() {
-                // Instead of a normal link, navigate with the token in localStorage
                 window.location.href = '/dashboard';
             });
             
-            // Logout button
             document.getElementById('logout-btn').addEventListener('click', function() {
                 localStorage.removeItem('auth_token');
                 updateUI();
             });
             
-            // Command execution form
             document.getElementById('command-form').addEventListener('submit', function(e) {
                 e.preventDefault();
                 
@@ -281,7 +348,9 @@
                     if (data.error) {
                         alert('Error: ' + data.error);
                     } else {
+                        currentExecutionId = data.execution_id;
                         document.getElementById('result-status').textContent = data.status;
+                        document.getElementById('result-status').className = 'status-' + data.status;
                         document.getElementById('result-execution-id').textContent = data.execution_id;
                         document.getElementById('view-output-link').href = '/output/' + data.execution_id;
                         showElement('result-container');

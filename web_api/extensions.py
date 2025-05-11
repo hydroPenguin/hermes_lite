@@ -42,6 +42,10 @@ def create_celery_app(app: Flask = None) -> Celery:
         },
         # Database configuration
         database_url=database_url,
+        # Worker configuration
+        worker_prefetch_multiplier=1,  # Don't prefetch more than 1 task
+        task_acks_late=True,  # Only acknowledge tasks after they're completed
+        worker_concurrency=2,  # Each worker can handle 2 tasks at once
     )
 
     class ContextTask(celery.Task):

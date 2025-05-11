@@ -48,6 +48,15 @@ def execute_command(self, execution_id, command_name, target_host, params, user)
         # Mark as running
         exe.status = 'running'
         session.commit()
+        
+        # Emit status update event
+        safe_emit(
+            'execution_update',
+            {
+                'execution_id': execution_id,
+                'status': 'running'
+            }
+        )
 
         # Send request to the agent on the target host
         agent_url = f"http://{target_host}:9000/execute"
@@ -56,24 +65,200 @@ def execute_command(self, execution_id, command_name, target_host, params, user)
             "params": params
         }
         
+        # Enable streaming for shell scripts to ensure proper output handling
+        if command_name.endswith(".sh"):
+            payload["stream_output"] = True
+        
         print(f"Sending request to agent at {agent_url} with payload: {payload}")
         
-        response = requests.post(
-            agent_url,
-            json=payload,
-            timeout=120  # 2-minute timeout
+        # Emit update that request is being sent
+        safe_emit(
+            'execution_output',
+            {
+                'execution_id': execution_id,
+                'output_line': f"[{time.strftime('%H:%M:%S')}] Sending request to agent with command: {command_name}"
+            }
         )
         
-        if response.status_code != 200:
-            raise RuntimeError(f"Agent returned error: {response.status_code} - {response.text}")
-        
-        result = response.json()
-        print(f"Agent response: {result}")
+        # Use streaming requests session to get real-time response chunks
+        with requests.Session() as http_session:
+            try:
+                # Use streaming=True to get content as it comes
+                response = http_session.post(
+                    agent_url,
+                    json=payload,
+                    timeout=180,  # 3-minute timeout for long-running tasks
+                    stream=True
+                )
+                
+                # Check initial response status code
+                if response.status_code != 200:
+                    error_msg = f"Agent returned error: {response.status_code} - {response.text}"
+                    safe_emit(
+                        'execution_output',
+                        {
+                            'execution_id': execution_id,
+                            'output_line': f"[ERROR] {error_msg}"
+                        }
+                    )
+                    raise RuntimeError(error_msg)
+                
+                # Initialize result with default values in case streaming fails
+                result = {
+                    'stdout': '',
+                    'stderr': '',
+                    'exit_code': -1
+                }
+                
+                # Stream response content if available and possible
+                response_consumed = False
+                if hasattr(response, 'iter_lines'):
+                    # For agents that support streaming responses
+                    json_data = None
+                    collected_output = []  # Collect all streamed output lines
+                    response_consumed = True  # Mark that we've consumed the response
+                    
+                    # Emit start of streaming message
+                    safe_emit(
+                        'execution_output',
+                        {
+                            'execution_id': execution_id,
+                            'output_line': f"[{time.strftime('%H:%M:%S')}] [STREAMING] Started streaming output for command: {command_name}"
+                        }
+                    )
+                    
+                    last_line_time = time.time()
+                    
+                    # Process streaming response line by line
+                    for line in response.iter_lines():
+                        if line:
+                            line_text = line.decode('utf-8')
+                            last_line_time = time.time()
+                            
+                            # Check if this is the final JSON data marker
+                            if line_text.startswith('JSON_COMPLETE:'):
+                                try:
+                                    json_data = json.loads(line_text.replace('JSON_COMPLETE:', '', 1))
+                                    # Indicate we received the complete data
+                                    safe_emit(
+                                        'execution_output',
+                                        {
+                                            'execution_id': execution_id,
+                                            'output_line': f"[{time.strftime('%H:%M:%S')}] [INFO] Received complete output data"
+                                        }
+                                    )
+                                    continue  # Skip emitting this line
+                                except json.JSONDecodeError:
+                                    pass  # If we can't parse it, treat as normal line
+                            
+                            # Skip empty heartbeat lines
+                            if line_text.strip() == "":
+                                continue
+                                
+                            # Collect output for DB storage
+                            collected_output.append(line_text)
+                            
+                            # Emit the line in real-time
+                            safe_emit(
+                                'execution_output',
+                                {
+                                    'execution_id': execution_id,
+                                    'output_line': line_text
+                                }
+                            )
+                        else:
+                            # If no data for a while, send a keepalive message
+                            if time.time() - last_line_time > 10:
+                                safe_emit(
+                                    'execution_output',
+                                    {
+                                        'execution_id': execution_id,
+                                        'output_line': f"[{time.strftime('%H:%M:%S')}] [INFO] Still executing..."
+                                    }
+                                )
+                                last_line_time = time.time()
+                    
+                    # If we received JSON data at the end, use it
+                    if json_data:
+                        result = json_data
+                        # If JSON data doesn't include full output but we collected it, add it
+                        if not result.get('stdout') and collected_output:
+                            result['stdout'] = '\n'.join(collected_output)
+                    # If no JSON data but we collected output, create a result
+                    elif collected_output:
+                        result = {
+                            'stdout': '\n'.join(collected_output),
+                            'stderr': '',
+                            'exit_code': 0  # Assume success if we got output
+                        }
+                    else:
+                        # No JSON data and no collected output - something might be wrong
+                        result = {
+                            'stdout': 'No output received from command',
+                            'stderr': '',
+                            'exit_code': -1
+                        }
+                
+                # Get the final JSON result if not already parsed from streaming
+                if not response_consumed:
+                    try:
+                        result = response.json()
+                    except (json.JSONDecodeError, RuntimeError) as e:
+                        # If we can't parse JSON or content was already consumed
+                        logger.warning(f"Error decoding response: {str(e)}")
+                        try:
+                            # Try to get content if not already consumed
+                            result = {
+                                'stdout': response.text if hasattr(response, 'text') else str(e),
+                                'stderr': f"Error processing response: {str(e)}",
+                                'exit_code': -1
+                            }
+                        except RuntimeError:
+                            # Content was already consumed
+                            result = {
+                                'stdout': str(e),
+                                'stderr': f"Error processing response: {str(e)}",
+                                'exit_code': -1
+                            }
+            
+            except requests.RequestException as e:
+                error_msg = f"Request to agent failed: {str(e)}"
+                safe_emit(
+                    'execution_output',
+                    {
+                        'execution_id': execution_id,
+                        'output_line': f"[ERROR] {error_msg}"
+                    }
+                )
+                raise RuntimeError(error_msg)
         
         # Extract results
         stdout = result.get('stdout', '')
         stderr = result.get('stderr', '')
         exit_code = result.get('exit_code', -1)
+        
+        # Emit final output if not already streamed
+        if stdout and not hasattr(response, 'iter_lines'):
+            # Split by lines to make it more readable in UI
+            for line in stdout.split('\n'):
+                if line.strip():  # Only emit non-empty lines
+                    safe_emit(
+                        'execution_output',
+                        {
+                            'execution_id': execution_id,
+                            'output_line': line
+                        }
+                    )
+        
+        # Emit any stderr
+        if stderr:
+            safe_emit(
+                'execution_output',
+                {
+                    'execution_id': execution_id,
+                    'output_line': f"[STDERR] {stderr}"
+                }
+            )
 
         # Update execution record
         exe.output = stdout
