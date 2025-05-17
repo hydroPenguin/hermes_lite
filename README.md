@@ -2,6 +2,10 @@
 
 A simple system for running predefined commands on remote hosts.
 
+## DeepWiki
+
+https://deepwiki.com/hydroPenguin/hermes_lite  
+
 ## What It Does
 
 Hermes Lite lets you run specific shell scripts on remote hosts through a web interface. It:
