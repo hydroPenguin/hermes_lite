@@ -4,13 +4,50 @@ import requests
 import json
 import os
 import logging
+import socketio as socketio_client
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.sql import func
 from extensions import celery_app as celery, socketio
 from models import CommandExecution
+import re
+
+# Try to import flag_modified, but provide a fallback if it doesn't exist
+try:
+    from sqlalchemy.orm import flag_modified
+    has_flag_modified = True
+except ImportError:
+    has_flag_modified = False
+    # Define a simple replacement function that will work with older SQLAlchemy versions
+    def flag_attribute_modified(obj, attr_name):
+        """Mark an attribute as modified on an object manually."""
+        try:
+            # Standard SQLAlchemy approach
+            obj._sa_instance_state.modified.add(attr_name)
+        except (AttributeError, TypeError):
+            # Fallback for when modified is not a set or doesn't have add method
+            # Just force a commit with the current value to ensure it's saved
+            logger.warning(f"Couldn't directly mark attribute '{attr_name}' as modified, using alternative approach")
+            try:
+                # For SQLAlchemy >= 1.4
+                from sqlalchemy import inspect
+                insp = inspect(obj)
+                if hasattr(insp, "add_attribute_change"):
+                    insp.add_attribute_change(attr_name, None, getattr(obj, attr_name, None))
+                    return True
+            except (ImportError, AttributeError):
+                pass
+            
+            # Last resort: just touch the attribute to make SQLAlchemy notice the change
+            current_value = getattr(obj, attr_name, None)
+            setattr(obj, attr_name, current_value)
+        return True
 
 # Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+)
 logger = logging.getLogger(__name__)
 
 # Create a direct SQLAlchemy engine
@@ -18,299 +55,275 @@ DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///data/hermes_lite.db')
 engine = create_engine(DATABASE_URL)
 SessionFactory = sessionmaker(bind=engine)
 
-# Safe SocketIO emitter that won't fail if SocketIO is not available
-def safe_emit(event, data, namespace='/realtime'):
-    """Safely emit a SocketIO event, handling the case where SocketIO is not available."""
+# SocketIO client for workers
+sio_client = None
+SOCKETIO_READY = False
+
+def init_socketio_client():
+    """Initialize a socketio client that workers can use to communicate with the Flask app."""
+    global sio_client
+    global SOCKETIO_READY
+    
     try:
-        if socketio and hasattr(socketio, 'server') and socketio.server:
-            socketio.emit(event, data, namespace=namespace)
-            return True
+        # Create a new socket.io client
+        sio_client = socketio_client.Client(
+            logger=False,
+            engineio_logger=False,
+            reconnection=True,
+            reconnection_attempts=5,
+            reconnection_delay=1,
+            reconnection_delay_max=5,
+            randomization_factor=0.5
+        )
+        
+        # Define event handlers
+        @sio_client.event(namespace='/realtime')
+        def connect():
+            global SOCKETIO_READY
+            logger.info(f"Worker {os.environ.get('WORKER_NAME', 'worker')}: Connected to SocketIO server")
+            SOCKETIO_READY = True
+
+        @sio_client.event(namespace='/realtime')
+        def connect_error(data):
+            global SOCKETIO_READY
+            logger.error(f"Worker {os.environ.get('WORKER_NAME', 'worker')}: Connection error to SocketIO server: {data}")
+            SOCKETIO_READY = False
+
+        @sio_client.event(namespace='/realtime')
+        def disconnect():
+            global SOCKETIO_READY
+            logger.warning(f"Worker {os.environ.get('WORKER_NAME', 'worker')}: Disconnected from SocketIO server")
+            SOCKETIO_READY = False
+        
+        @sio_client.event(namespace='/realtime')
+        def welcome(data):
+            logger.info(f"Worker received welcome message: {data}")
+        
+        # Connect to the Flask app's socket.io server
+        server_url = os.environ.get('SOCKETIO_SERVER', 'http://web:5000')
+        logger.info(f"Worker {os.environ.get('WORKER_NAME', 'worker')}: Connecting to Socket.IO server at {server_url}")
+        sio_client.connect(
+            server_url,
+            namespaces=['/realtime'],
+            transports=['websocket'],
+            wait=True
+        )
+        
+        return True
     except Exception as e:
-        logger.warning(f"Could not emit {event} event: {str(e)}")
-        print(f"Could not emit {event} event: {str(e)}")
+        logger.error(f"Error initializing Socket.IO client: {e}")
+        SOCKETIO_READY = False
+        return False
+
+def safe_emit(event, data, execution_id=None):
+    """Safely emit a socket.io event, with fallback mechanisms."""
+    global sio_client
+    global SOCKETIO_READY
+    
+    # Get the room name for this execution
+    room = f"exec_{execution_id}" if execution_id else None
+    
+    # Add metadata to the event
+    data.update({
+        'source': f"worker_{os.environ.get('WORKER_NAME', 'worker')}",
+        'event_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'from_client': True
+    })
+    
+    # Try using the client socket.io connection 
+    if SOCKETIO_READY and sio_client:
+        try:
+            sio_client.emit(event, data, namespace='/realtime')
+            return True
+        except Exception as e:
+            logger.error(f"Error emitting {event} via client: {e}")
+            SOCKETIO_READY = False
+    
+    # If we have execution_id but socket.io isn't ready, try using server-side socketio
+    if execution_id and not SOCKETIO_READY:
+        try:
+            if socketio:
+                socketio.emit(event, data, namespace='/realtime', room=room)
+                return True
+        except Exception as e:
+            logger.error(f"Error emitting using server-side socketio: {e}")
+    
+    # Try to reconnect the client if it's not ready
+    if not SOCKETIO_READY or not sio_client:
+        logger.warning(f"Worker {os.environ.get('WORKER_NAME', 'worker')}: Socket.IO not available for emitting")
+        success = init_socketio_client()
+        
+        if success and execution_id:
+            try:
+                sio_client.emit('join', {'execution_id': execution_id}, namespace='/realtime')
+                sio_client.emit(event, data, namespace='/realtime')
+                return True
+            except Exception as e:
+                logger.error(f"Error joining room after reconnect: {e}")
+    
+    # Persist error in database if we have an execution ID
+    if execution_id:
+        try:
+            Session = scoped_session(SessionFactory)
+            session = Session()
+            execution = session.query(CommandExecution).filter_by(id=execution_id).first()
+            if execution:
+                execution.output += f"\n[ERROR] Failed to stream output in real-time"
+                session.commit()
+        except Exception as db_error:
+            logger.error(f"Error updating execution record: {db_error}")
+        finally:
+            Session.remove()
+    
     return False
 
-@celery.task(bind=True, name='extensions.execute_command')
-def execute_command(self, execution_id, command_name, target_host, params, user):
-    """
-    Executes a predefined command on the target host, streams output via Socket.IO,
-    and updates the database record with status, output, and timing.
-    """
-    # Create a session directly with SQLAlchemy
-    session = SessionFactory()
+# Attempt to initialize the socketio client when this module is imported
+try:
+    init_socketio_client()
+except Exception as e:
+    logger.error(f"Failed to initialize SocketIO client on module import: {e}")
 
+@celery.task(name="execute_command")
+def execute_command(execution_id, command_name, target_host, params=None, user=None):
+    """Execute a command on a target host."""
+    if params is None:
+        params = []
+    
+    Session = scoped_session(SessionFactory)
+    session = Session()
+    
     try:
-        # Fetch the execution record
-        exe = session.query(CommandExecution).filter_by(id=execution_id).first()
-        if not exe:
-            raise RuntimeError(f"Execution record {execution_id} not found")
-
-        # Mark as running
-        exe.status = 'running'
-        session.commit()
+        # Get the execution record
+        execution = session.query(CommandExecution).filter_by(id=execution_id).first()
         
-        # Emit status update event
-        safe_emit(
-            'execution_update',
-            {
-                'execution_id': execution_id,
-                'status': 'running'
-            }
-        )
-
-        # Send request to the agent on the target host
-        agent_url = f"http://{target_host}:9000/execute"
-        payload = {
-            "command_name": command_name,
-            "params": params
-        }
-        
-        # Enable streaming for shell scripts to ensure proper output handling
-        if command_name.endswith(".sh"):
-            payload["stream_output"] = True
-        
-        print(f"Sending request to agent at {agent_url} with payload: {payload}")
-        
-        # Emit update that request is being sent
-        safe_emit(
-            'execution_output',
-            {
-                'execution_id': execution_id,
-                'output_line': f"[{time.strftime('%H:%M:%S')}] Sending request to agent with command: {command_name}"
-            }
-        )
-        
-        # Use streaming requests session to get real-time response chunks
-        with requests.Session() as http_session:
-            try:
-                # Use streaming=True to get content as it comes
-                response = http_session.post(
-                    agent_url,
-                    json=payload,
-                    timeout=180,  # 3-minute timeout for long-running tasks
-                    stream=True
-                )
-                
-                # Check initial response status code
-                if response.status_code != 200:
-                    error_msg = f"Agent returned error: {response.status_code} - {response.text}"
-                    safe_emit(
-                        'execution_output',
-                        {
-                            'execution_id': execution_id,
-                            'output_line': f"[ERROR] {error_msg}"
-                        }
-                    )
-                    raise RuntimeError(error_msg)
-                
-                # Initialize result with default values in case streaming fails
-                result = {
-                    'stdout': '',
-                    'stderr': '',
-                    'exit_code': -1
-                }
-                
-                # Stream response content if available and possible
-                response_consumed = False
-                if hasattr(response, 'iter_lines'):
-                    # For agents that support streaming responses
-                    json_data = None
-                    collected_output = []  # Collect all streamed output lines
-                    response_consumed = True  # Mark that we've consumed the response
-                    
-                    # Emit start of streaming message
-                    safe_emit(
-                        'execution_output',
-                        {
-                            'execution_id': execution_id,
-                            'output_line': f"[{time.strftime('%H:%M:%S')}] [STREAMING] Started streaming output for command: {command_name}"
-                        }
-                    )
-                    
-                    last_line_time = time.time()
-                    
-                    # Process streaming response line by line
-                    for line in response.iter_lines():
-                        if line:
-                            line_text = line.decode('utf-8')
-                            last_line_time = time.time()
-                            
-                            # Check if this is the final JSON data marker
-                            if line_text.startswith('JSON_COMPLETE:'):
-                                try:
-                                    json_data = json.loads(line_text.replace('JSON_COMPLETE:', '', 1))
-                                    # Indicate we received the complete data
-                                    safe_emit(
-                                        'execution_output',
-                                        {
-                                            'execution_id': execution_id,
-                                            'output_line': f"[{time.strftime('%H:%M:%S')}] [INFO] Received complete output data"
-                                        }
-                                    )
-                                    continue  # Skip emitting this line
-                                except json.JSONDecodeError:
-                                    pass  # If we can't parse it, treat as normal line
-                            
-                            # Skip empty heartbeat lines
-                            if line_text.strip() == "":
-                                continue
-                                
-                            # Collect output for DB storage
-                            collected_output.append(line_text)
-                            
-                            # Emit the line in real-time
-                            safe_emit(
-                                'execution_output',
-                                {
-                                    'execution_id': execution_id,
-                                    'output_line': line_text
-                                }
-                            )
-                        else:
-                            # If no data for a while, send a keepalive message
-                            if time.time() - last_line_time > 10:
-                                safe_emit(
-                                    'execution_output',
-                                    {
-                                        'execution_id': execution_id,
-                                        'output_line': f"[{time.strftime('%H:%M:%S')}] [INFO] Still executing..."
-                                    }
-                                )
-                                last_line_time = time.time()
-                    
-                    # If we received JSON data at the end, use it
-                    if json_data:
-                        result = json_data
-                        # If JSON data doesn't include full output but we collected it, add it
-                        if not result.get('stdout') and collected_output:
-                            result['stdout'] = '\n'.join(collected_output)
-                    # If no JSON data but we collected output, create a result
-                    elif collected_output:
-                        result = {
-                            'stdout': '\n'.join(collected_output),
-                            'stderr': '',
-                            'exit_code': 0  # Assume success if we got output
-                        }
-                    else:
-                        # No JSON data and no collected output - something might be wrong
-                        result = {
-                            'stdout': 'No output received from command',
-                            'stderr': '',
-                            'exit_code': -1
-                        }
-                
-                # Get the final JSON result if not already parsed from streaming
-                if not response_consumed:
-                    try:
-                        result = response.json()
-                    except (json.JSONDecodeError, RuntimeError) as e:
-                        # If we can't parse JSON or content was already consumed
-                        logger.warning(f"Error decoding response: {str(e)}")
-                        try:
-                            # Try to get content if not already consumed
-                            result = {
-                                'stdout': response.text if hasattr(response, 'text') else str(e),
-                                'stderr': f"Error processing response: {str(e)}",
-                                'exit_code': -1
-                            }
-                        except RuntimeError:
-                            # Content was already consumed
-                            result = {
-                                'stdout': str(e),
-                                'stderr': f"Error processing response: {str(e)}",
-                                'exit_code': -1
-                            }
-            
-            except requests.RequestException as e:
-                error_msg = f"Request to agent failed: {str(e)}"
-                safe_emit(
-                    'execution_output',
-                    {
-                        'execution_id': execution_id,
-                        'output_line': f"[ERROR] {error_msg}"
-                    }
-                )
-                raise RuntimeError(error_msg)
-        
-        # Extract results
-        stdout = result.get('stdout', '')
-        stderr = result.get('stderr', '')
-        exit_code = result.get('exit_code', -1)
-        
-        # Emit final output if not already streamed
-        if stdout and not hasattr(response, 'iter_lines'):
-            # Split by lines to make it more readable in UI
-            for line in stdout.split('\n'):
-                if line.strip():  # Only emit non-empty lines
-                    safe_emit(
-                        'execution_output',
-                        {
-                            'execution_id': execution_id,
-                            'output_line': line
-                        }
-                    )
-        
-        # Emit any stderr
-        if stderr:
-            safe_emit(
-                'execution_output',
-                {
-                    'execution_id': execution_id,
-                    'output_line': f"[STDERR] {stderr}"
-                }
-            )
-
-        # Update execution record
-        exe.output = stdout
-        exe.error = stderr
-        exe.exit_code = exit_code
-        exe.end_time = func.now()
-        exe.status = 'success' if exit_code == 0 else 'failure'
-        session.commit()
-
-        # Emit completion event (safely)
-        safe_emit(
-            'execution_complete',
-            {
-                'execution_id': execution_id,
-                'status': exe.status,
-                'exit_code': exit_code
-            }
-        )
-
-        return {
-            'status': exe.status,
-            'output': stdout,
-            'error': stderr,
-            'exit_code': exit_code,
-            'execution_id': execution_id
-        }
-
-    except Exception as e:
-        # On error, update record if possible
-        err_msg = str(e)
-        print(f"Error in execute_command: {err_msg}")
-        if 'exe' in locals():
-            exe.status = 'failure'
-            exe.error = err_msg
-            exe.end_time = func.now()
+        if execution:
+            # Update the execution status
+            execution.status = 'running'
+            execution.start_time = func.now()
             session.commit()
             
-            # Emit error event (safely)
-            safe_emit(
-                'execution_error',
-                {
-                    'execution_id': execution_id,
-                    'error': err_msg
-                }
-            )
+            # Make API call to the agent on the target host
+            agent_url = f"http://{target_host}:9000/execute"
+            payload = {
+                'command_name': command_name,
+                'params': params,
+                'execution_id': str(execution_id)
+            }
             
-        return {
-            'status': 'failure',
-            'error': err_msg,
-            'execution_id': execution_id
-        }
+            response = requests.post(agent_url, json=payload, stream=True)
+            
+            # Stream response back for real-time feedback
+            if response.status_code == 200:
+                # Mark the beginning of streaming
+                streaming_message = f"Starting execution of command: {command_name}"
+                safe_emit('execution_output', 
+                          {'execution_id': execution_id, 'output_line': streaming_message}, 
+                          execution_id=execution_id)
 
+                # Update execution with streaming message
+                execution.output = streaming_message + "\n"
+                session.commit()
+                
+                # Process streaming response
+                exit_code = None
+                exit_code_pattern = re.compile(r'\[EXIT_CODE:(\d+)\]')
+                
+                for line in response.iter_lines(decode_unicode=True):
+                    if line:
+                        # Check if this line contains an exit code
+                        exit_code_match = exit_code_pattern.search(line)
+                        if exit_code_match:
+                            exit_code = int(exit_code_match.group(1))
+                            logger.info(f"Extracted exit code {exit_code} from output")
+                        
+                        # Add line to execution output
+                        if execution.output:
+                            execution.output += f"\n{line}"
+                        else:
+                            execution.output = line
+                            
+                        # Use flag_modified if available for SQLAlchemy ORM
+                        if has_flag_modified:
+                            flag_modified(execution, 'output')
+                        else:
+                            flag_attribute_modified(execution, 'output')
+                        
+                        session.commit()
+                        
+                        # Emit to socket.io for real-time updates
+                        safe_emit('execution_output', 
+                                  {'execution_id': execution_id, 'output_line': line}, 
+                                  execution_id=execution_id)
+                
+                # Update execution status to success
+                execution.status = 'success'
+                execution.end_time = func.now()
+                
+                # Set exit code (may have been parsed from output or set here)
+                if exit_code is not None:
+                    execution.exit_code = exit_code
+                else:
+                    execution.exit_code = 0
+                    
+                session.commit()
+                
+                # Emit completion update
+                complete_data = {
+                    'execution_id': execution_id, 
+                    'status': 'success',
+                    'end_time': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                safe_emit('execution_update', complete_data, execution_id=execution_id)
+                
+                return True
+            else:
+                error_message = f"[ERROR] Request to agent failed with status code: {response.status_code}, response: {response.text}"
+                logger.error(error_message)
+                
+                # Update execution status to failed
+                execution.status = 'failure'
+                execution.output += f"\n{error_message}"
+                execution.end_time = func.now()
+                execution.exit_code = 1  # Non-zero exit code for failures
+                session.commit()
+                
+                # Emit failure update
+                error_data = {
+                    'execution_id': execution_id, 
+                    'status': 'failure',
+                    'error': error_message
+                }
+                safe_emit('execution_update', error_data, execution_id=execution_id)
+                
+                return False
+        else:
+            logger.error(f"Execution with ID {execution_id} not found")
+            return False
+            
+    except Exception as e:
+        error_message = f"[ERROR] Failed to execute command: {str(e)}"
+        logger.error(error_message)
+        
+        try:
+            # Update execution status to failed
+            if 'execution' in locals() and execution:
+                execution.status = 'failure'
+                execution.output += f"\n{error_message}"
+                execution.end_time = func.now()
+                execution.exit_code = 1  # Non-zero exit code for failures
+                session.commit()
+                
+                # Emit failure update
+                error_data = {
+                    'execution_id': execution_id, 
+                    'status': 'failure',
+                    'error': error_message
+                }
+                safe_emit('execution_update', error_data, execution_id=execution_id)
+        except Exception as save_error:
+            logger.error(f"[ERROR] Failed to update execution record: {save_error}")
+        
+        return False
     finally:
-        # Clean up the session
-        session.close()
+        if 'Session' in locals():
+            Session.remove()

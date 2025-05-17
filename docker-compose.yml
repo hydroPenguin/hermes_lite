@@ -15,6 +15,12 @@ services:
       - RABBITMQ_DEFAULT_PASS=password
     networks:
       - hermes_network
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   web:
     build:
@@ -28,7 +34,8 @@ services:
       - ./data:/app/data # Mount data directory for SQLite DB
       - ./agent:/app/agent # Make agent code accessible if web needs to know about it (e.g. list commands)
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
     environment:
       - FLASK_ENV=development
       - FLASK_APP=app.py # Explicitly set FLASK_APP
@@ -38,21 +45,34 @@ services:
       - API_KEY=SUPER_SECRET_API_KEY # Simple auth
       - SECRET_KEY=your_secure_secret_key
       - JWT_SECRET=your_secure_jwt_secret
+      - PYTHONPATH=/app # Ensure Python can find the app modules
     networks:
       - hermes_network
-    command: flask run --host=0.0.0.0 --reload
+    # Use the start_web.py script to ensure proper eventlet patching
+    command: python start_web.py
+    healthcheck:
+      # Use Python instead of wget/curl since it's guaranteed to be available
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').getcode()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   worker:
     build:
       context: ./web_api # Worker uses the same environment as the web_api
     container_name: hermes_worker
-    command: celery -A extensions.celery_app worker -l info
+    # Use the start_worker.py script with default settings for worker1
+    command: python start_worker.py
     volumes:
       - ./web_api:/app # Mount app code
       - ./data:/app/data # Mount data directory for SQLite DB
       - ./agent:/app/agent # Make agent code accessible if worker needs it
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
+      web:
+        condition: service_healthy
     environment:
       - CELERY_BROKER_URL=amqp://user:password@rabbitmq:5672//
       - CELERY_RESULT_BACKEND=db+sqlite:///data/hermes_lite.db
@@ -60,6 +80,12 @@ services:
       - PYTHONUNBUFFERED=1 # For Celery logs
       - SECRET_KEY=your_secure_secret_key
       - JWT_SECRET=your_secure_jwt_secret
+      - PYTHONPATH=/app # Ensure Python can find the app modules
+      - CELERY_APP=extensions.celery_app # Set the Celery application
+      - WORKER_NAME=worker # Set worker name
+      - SOCKETIO_URL=http://web:5000 # Connect to the Socket.IO server in the web container
+      - WORKER_STARTUP_DELAY=1 # Reduced delay for worker1
+      - WORKER_RETRY_ATTEMPTS=10 # Fewer retry attempts
     networks:
       - hermes_network
 
@@ -67,13 +93,17 @@ services:
     build:
       context: ./web_api # Worker uses the same environment as the web_api
     container_name: hermes_worker2
-    command: celery -A extensions.celery_app worker -l info --hostname=worker2@%h
+    # Use the same start_worker.py script but with different env vars
+    command: python start_worker.py
     volumes:
       - ./web_api:/app # Mount app code
       - ./data:/app/data # Mount data directory for SQLite DB
       - ./agent:/app/agent # Make agent code accessible if worker needs it
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
+      web:
+        condition: service_healthy
     environment:
       - CELERY_BROKER_URL=amqp://user:password@rabbitmq:5672//
       - CELERY_RESULT_BACKEND=db+sqlite:///data/hermes_lite.db
@@ -81,6 +111,12 @@ services:
       - PYTHONUNBUFFERED=1 # For Celery logs
       - SECRET_KEY=your_secure_secret_key
       - JWT_SECRET=your_secure_jwt_secret
+      - PYTHONPATH=/app # Ensure Python can find the app modules
+      - CELERY_APP=extensions.celery_app # Set the Celery application
+      - WORKER_NAME=worker2 # Set worker name
+      - SOCKETIO_URL=http://web:5000 # Connect to the Socket.IO server in the web container
+      - WORKER_STARTUP_DELAY=2 # Reduced delay for worker2
+      - WORKER_RETRY_ATTEMPTS=10 # Fewer retry attempts
     networks:
       - hermes_network
 

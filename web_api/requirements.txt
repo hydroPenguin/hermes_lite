@@ -7,3 +7,5 @@ flask_sqlalchemy==3.1.1 #Use a supported version.
 eventlet==0.39.1
 PyJWT==2.8.0 # For JWT authentication
 werkzeug==3.0.3 # For password hashing
+flask-cors==4.0.0 # For CORS support
+websocket-client==1.7.0 # For Socket.IO websocket transport

@@ -16,7 +16,14 @@ from celery import Celery
 from flask import Flask
 
 db = SQLAlchemy()
-socketio = SocketIO()
+# Initialize SocketIO with correct server-side settings
+socketio = SocketIO(
+    async_mode='eventlet',
+    engineio_logger=True,  # Enable logging for troubleshooting
+    # Server-side parameters only - remove client-side parameters
+    ping_timeout=60,
+    ping_interval=25
+)
 
 def create_celery_app(app: Flask = None) -> Celery:
     """

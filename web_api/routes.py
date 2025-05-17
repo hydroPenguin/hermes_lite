@@ -1,5 +1,6 @@
-from flask import Blueprint, render_template, request, jsonify
+from flask import Blueprint, render_template, request, jsonify, redirect
 from sqlalchemy.orm import scoped_session, sessionmaker
+from sqlalchemy import text
 from extensions import db
 from models import CommandExecution
 from tasks import execute_command
@@ -10,10 +11,34 @@ main = Blueprint('main', __name__)
 def get_session():
     return scoped_session(sessionmaker(bind=db.engine))
 
+@main.route('/health')
+def health_check():
+    """
+    Health check endpoint for Docker and other monitoring services.
+    No authentication required.
+    """
+    try:
+        # Verify database connection
+        session = get_session()
+        session.execute(text("SELECT 1")).fetchone()
+        session.remove()
+        # If we get here, database is working
+        return jsonify({
+            'status': 'healthy',
+            'database': 'connected',
+            'message': 'Service is up and running'
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'database': 'error',
+            'message': str(e)
+        }), 500
+
 @main.route('/')
 def index():
     """Home page -  command execution form."""
-    return render_template('index.html')  # Create this template
+    return render_template('index.html')
 
 @main.route('/execute_command', methods=['POST'])
 @token_required
@@ -22,31 +47,44 @@ def trigger_command():
     Triggers the execution of a command via Celery.
     Requires authentication.
     """
-    session = get_session() #get the session
+    session = get_session()
     try:
         data = request.get_json()
         command_name = data.get('command_name')
         target_host = data.get('target_host')
         params = data.get('params', [])
+        stream_to_ui = data.get('stream_to_ui', False)
         
         # Use the authenticated user from the token
         user = request.username
 
-        # 1. Create a CommandExecution record in the database.
+        # Create a CommandExecution record in the database
         execution = CommandExecution(
             command_name=command_name,
             target_host=target_host,
             user=user
         )
         session.add(execution)
-        session.commit()  # Commit immediately to get the execution.id
+        session.commit()
 
-        execution_id = execution.id  # Get the generated ID
+        execution_id = execution.id
 
-        # 2. Trigger the Celery task with the correct task name
+        # Trigger the Celery task
         task = execute_command.delay(execution_id, command_name, target_host, params, user)
-
-        return jsonify({'execution_id': execution_id, 'task_id': task.id, 'status': 'pending'}), 202  # 202 Accepted
+        
+        # If direct streaming to UI is requested, return redirect info
+        if stream_to_ui:
+            stream_url = f"/stream-output/{execution_id}"
+            return jsonify({
+                'execution_id': execution_id, 
+                'task_id': task.id, 
+                'status': 'pending',
+                'stream_url': stream_url,
+                'redirect': True
+            }), 202
+        
+        # Otherwise, return standard response
+        return jsonify({'execution_id': execution_id, 'task_id': task.id, 'status': 'pending'}), 202
 
     except Exception as e:
         session.rollback()
@@ -56,30 +94,24 @@ def trigger_command():
         session.remove()
 
 @main.route('/status/<int:execution_id>')
-@token_required
 def get_status(execution_id):
     """
     Gets the status of a command execution.
-    Requires authentication.
+    No authentication required - all users can view execution status.
     """
     session = get_session()
     try:
-        execution = session.get(CommandExecution, execution_id) # Use get
+        execution = session.get(CommandExecution, execution_id)
         if not execution:
             return jsonify({'error': 'Execution not found'}), 404
         
-        # Check if user has permission to view this execution
-        if execution.user != request.username and not request.is_admin:
-            return jsonify({'error': 'Unauthorized access'}), 403
-        
-        #  Do not return the full output here, might be too large.
         return jsonify({
             'id': execution.id,
             'command_name': execution.command_name,
             'target_host': execution.target_host,
             'status': execution.status,
-            'start_time': execution.start_time,
-            'end_time': execution.end_time,
+            'start_time': execution.start_time.isoformat() if execution.start_time else None,
+            'end_time': execution.end_time.isoformat() if execution.end_time else None,
             'exit_code': execution.exit_code,
             'user': execution.user
         }), 200
@@ -95,51 +127,38 @@ def get_output(execution_id):
     Renders the output.html template with real-time streaming capability.
     Authentication is handled client-side by JavaScript.
     """
-    # We'll only render the template here - client-side JS will handle
-    # fetching the actual data and connecting to Socket.IO for real-time updates
-    return render_template('output.html')
+    session = get_session()
+    try:
+        execution = session.get(CommandExecution, execution_id)
+        if not execution:
+            return render_template('output.html', execution=None, error="Execution not found")
+        
+        return render_template(
+            'output.html', 
+            execution=execution,
+            auto_connect=True,
+            streaming_mode=True
+        )
+    except Exception as e:
+        return render_template('output.html', execution=None, error=str(e))
+    finally:
+        session.remove()
 
 @main.route('/api/output/<int:execution_id>')
 def get_output_api(execution_id):
     """
     API endpoint that returns the raw output data for a command execution.
-    Authentication is handled by client-side JS.
+    No authentication required - all users can view command outputs.
     """
     session = get_session()
     try:
-        execution = session.get(CommandExecution, execution_id) # Use get
+        execution = session.get(CommandExecution, execution_id)
         if not execution:
             return jsonify({'error': 'Execution not found'}), 404
         
-        # API authentication check
-        auth_header = request.headers.get('Authorization')
-        auth_valid = False
-        
-        if auth_header and auth_header.startswith('Bearer '):
-            from auth import decode_token
-            token = auth_header.split(' ')[1]
-            payload = decode_token(token)
-            if payload:
-                # If authenticated with token, check permissions
-                username = payload['username']
-                is_admin = payload['is_admin']
-                if execution.user == username or is_admin:
-                    auth_valid = True
-                else:
-                    return jsonify({'error': 'Unauthorized access'}), 403
-        
-        # For development/demo purposes, allow access without authentication
-        # In production, you would remove this and enforce authentication
-        # by uncommenting the next line:
-        # if not auth_valid:
-        #     return jsonify({'error': 'Authentication required'}), 401
-        
-        # Return the output
-        return jsonify({'output': execution.output}), 200
+        # Return the output - no auth check required
+        return jsonify({'output': execution.output or ''}), 200
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"Error in get_output_api: {error_details}")
         return jsonify({'error': f'Error fetching output: {str(e)}'}), 500
     finally:
         session.remove()
@@ -152,26 +171,23 @@ def dashboard():
     """
     session = get_session()
     try:
-        # We'll handle authentication in the client-side JavaScript
-        # This is a simpler approach for the demo - in production, you should use
-        # server-side auth for all routes
-        
         # Return all executions - filtering will happen client-side
         executions_query = session.query(CommandExecution).order_by(CommandExecution.start_time.desc()).all()
         
         # Convert SQLAlchemy objects to dictionaries for JSON serialization
         executions = []
         for exe in executions_query:
-            executions.append({
+            exe_dict = {
                 'id': exe.id,
                 'command_name': exe.command_name,
                 'target_host': exe.target_host,
                 'status': exe.status,
                 'start_time': exe.start_time.isoformat() if exe.start_time else None,
                 'end_time': exe.end_time.isoformat() if exe.end_time else None,
-                'exit_code': exe.exit_code,
+                'exit_code': exe.exit_code if exe.exit_code is not None else None,
                 'user': exe.user
-            })
+            }
+            executions.append(exe_dict)
         
         return render_template('dashboard.html', executions=executions)
     except Exception as e:
@@ -188,11 +204,8 @@ def get_executions():
     """
     session = get_session()
     try:
-        # Non-admin users can only see their own executions
-        if not request.is_admin:
-            executions = session.query(CommandExecution).filter_by(user=request.username).order_by(CommandExecution.start_time.desc()).all()
-        else:
-            executions = session.query(CommandExecution).order_by(CommandExecution.start_time.desc()).all()
+        # Return all executions for all users regardless of admin status
+        executions = session.query(CommandExecution).order_by(CommandExecution.start_time.desc()).all()
         
         result = []
         for exe in executions:
@@ -210,5 +223,27 @@ def get_executions():
         return jsonify({'executions': result}), 200
     except Exception as e:
         return jsonify({'error': f'Error fetching executions: {str(e)}'}), 500
+    finally:
+        session.remove()
+
+@main.route('/stream-output/<int:execution_id>')
+def stream_output(execution_id):
+    """
+    Render a page for streaming command output in real-time.
+    """
+    session = get_session()
+    try:
+        execution = session.get(CommandExecution, execution_id)
+        if not execution:
+            return render_template('output.html', execution=None, error="Execution not found")
+        
+        return render_template(
+            'output.html', 
+            execution=execution,
+            auto_connect=True,
+            streaming_mode=True
+        )
+    except Exception as e:
+        return render_template('output.html', execution=None, error=str(e))
     finally:
         session.remove()

@@ -78,8 +78,7 @@ def execute_command():
         stdout, stderr = process.communicate(timeout=300) # Add a timeout
         exit_code = process.returncode
 
-        app.logger.info(f"Command '{command_name}' completed with exit code {exit_code}")
-        app.logger.debug(f"Stdout: {stdout}")
+        app.logger.info(f"Command '{command_name}' completed with exit code {exit_code}") 
         if stderr:
              app.logger.error(f"Stderr: {stderr}")
 
@@ -161,14 +160,15 @@ def stream_command_output(command, command_name):
             # Track all emitted lines for final output
             all_emitted_lines = []
             
-            # Send initial message to confirm streaming has started
+            # Record initial message in logs but don't send to client
             initial_message = f"[{time.strftime('%H:%M:%S')}] [INFO] Starting execution of '{command_name}'..."
             all_emitted_lines.append(initial_message)
-            yield initial_message + "\n"
+            # Don't yield to client: yield initial_message + "\n"
             
             # Flag to track if we're showing "waiting" messages
             shown_waiting = False
             last_output_time = time.time()
+            last_heartbeat_time = time.time()
             
             # Yield available output lines
             while process.poll() is None or not output_queue.empty():
@@ -177,19 +177,26 @@ def stream_command_output(command, command_name):
                     all_emitted_lines.append(line)
                     yield line + "\n"
                     last_output_time = time.time()
+                    last_heartbeat_time = time.time()
                     shown_waiting = False
                 except queue.Empty:
-                    # If it's been more than 3 seconds since last output and process is still running
-                    if time.time() - last_output_time > 3 and process.poll() is None and not shown_waiting:
+                    current_time = time.time()
+                    
+                    # If it's been more than 30 seconds since last output and process is still running
+                    if current_time - last_output_time > 30 and process.poll() is None and not shown_waiting:
+                        # Don't yield the "Still waiting" info message, just record for logs
                         waiting_msg = f"[{time.strftime('%H:%M:%S')}] [INFO] Still waiting for output..."
                         all_emitted_lines.append(waiting_msg)
-                        yield waiting_msg + "\n"
+                        # Don't send to client: yield waiting_msg + "\n"
                         shown_waiting = True
+                        last_heartbeat_time = current_time
                     
-                    # Send an empty line occasionally as a heartbeat
-                    if process.poll() is None:
+                    # Send a heartbeat every 10 seconds to keep the connection alive
+                    if current_time - last_heartbeat_time >= 10 and process.poll() is None:
                         yield " \n"  # Space + newline keeps connection alive but doesn't display
-                    time.sleep(0.5)
+                        last_heartbeat_time = current_time
+                    
+                    time.sleep(0.2) # Check more frequently
             
             # Wait for process to complete and threads to finish
             stdout_thread.join(timeout=2)
@@ -202,16 +209,13 @@ def stream_command_output(command, command_name):
             yield final_status + "\n"
             
             # After streaming, send the complete data as JSON
-            complete_data = {
-                "command": command_name,
-                "stdout": "\n".join(all_emitted_lines),  # Include all formatted output
-                "raw_stdout": "".join(collected_stdout),  # Also include raw output
-                "stderr": "".join(collected_stderr),
-                "exit_code": exit_code
-            }
-            
-            # Send JSON data with a special marker
-            yield f"JSON_COMPLETE:{json.dumps(complete_data)}\n"
+            # complete_data = {
+            #     "command": command_name,
+            #     "stdout": "\n".join(all_emitted_lines),  # Include all formatted output
+            #     "raw_stdout": "".join(collected_stdout),  # Also include raw output
+            #     "stderr": "".join(collected_stderr),
+            #     "exit_code": exit_code
+            # }
             
         except Exception as e:
             app.logger.error(f"Error in streaming command: {str(e)}")
@@ -219,7 +223,6 @@ def stream_command_output(command, command_name):
                 process.kill()
             error_msg = f"[ERROR] Exception during execution: {str(e)}"
             yield error_msg + "\n"
-            yield f"JSON_COMPLETE:{json.dumps({'command': command_name, 'stdout': error_msg, 'stderr': str(e), 'exit_code': -1})}\n"
     
     return Response(
         stream_with_context(generate()),
@@ -236,4 +239,4 @@ if __name__ == '__main__':
         app.logger.error(f"Predefined commands directory {PREDEFINED_COMMANDS_DIR} not found!")
 
     # Make sure 0.0.0.0 is used to be accessible from other Docker containers
-    app.run(host='0.0.0.0', port=AGENT_PORT, debug=True)
+    app.run(host='0.0.0.0', port=AGENT_PORT, debug=False)
