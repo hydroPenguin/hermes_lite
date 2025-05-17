@@ -1,90 +1,61 @@
 # Hermes Lite
 
-A platform for securely executing predefined Linux commands on remote hosts.
+A simple system for running predefined commands on remote hosts.
 
-## Overview
+## What It Does
 
-Hermes Lite allows engineers to remotely execute predefined Linux commands on specific internal hosts. It handles authentication, command execution tracking, and provides a web interface to view results.
+Hermes Lite lets you run specific shell scripts on remote hosts through a web interface. It:
 
-## Features
+- Provides a clean, minimal web interface
+- Executes commands securely in containers
+- Tracks command history and results
+- Shows command output in real-time
+- Makes command results accessible to everyone
 
-- Trigger execution of predefined commands on target hosts
-- Authentication and authorization through JWT
-- Command execution tracking and history
-- Real-time status updates
-- Simple web interface
+## How It Works
 
-## Getting Started
+The system has four parts:
+1. **Web Interface** - Where users select and run commands
+2. **Workers** - Execute commands asynchronously
+3. **Message Queue** - Connects web interface to workers
+4. **Target Hosts** - Where commands actually run
 
-### Prerequisites
+## Quick Start
 
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
+### Requirements
+- Docker and Docker Compose
 - Git
 
-### Installation
-
-1. Clone the repository:
+### Setup
 
 ```bash
+# Get the code and start the system
 git clone https://github.com/hydroPenguin/hermes_lite
 cd hermes_lite
-```
-
-2. Start the containers:
-
-```bash
 docker-compose up -d
+
+# Access the web interface
+# http://localhost:5001
 ```
 
-This will launch all required services:
-- Web API (Flask)
-- Worker (Celery)
-- Message broker (RabbitMQ)
-- Target hosts
+### Using Hermes Lite
 
-3. Access the web interface at http://localhost:5001
+1. **Register & Login**
+   - First registered user becomes admin
+   - Login with your credentials
 
-### Usage
+2. **Run Commands**
+   - Choose a command (e.g., list_files.sh)
+   - Select a target host
+   - Add parameters if needed
+   - Click "Execute"
 
-#### Registration & Login
-
-1. Open http://localhost:5001 in your browser
-2. Click on "Register" to create a new account
-3. The first registered user automatically becomes an admin
-4. Login with your credentials
-
-#### Running Commands
-
-1. After logging in, you'll see the command execution form
-2. Select a command from the dropdown (e.g., "list_files.sh")
-3. Choose a target host (Alpha or Beta)
-4. Add parameters if needed (space-separated)
-5. Click "Execute"
-
-#### Viewing Results
-
-1. Command status will be displayed immediately 
-2. Click "View Output" to see the command output
-3. For full history, click "Dashboard" to view all your executions
-
-## Troubleshooting
-
-- If you encounter any issues, check the container logs:
-  ```bash
-  docker-compose logs web
-  docker-compose logs worker
-  ```
-
-- To restart the services:
-  ```bash
-  docker-compose restart
-  ```
-
-- To stop and remove all containers:
-  ```bash
-  docker-compose down
-  ```
+3. **View Results**
+   - Status appears immediately
+   - Click "View Output" to see results
+   - All users can view command outputs
+   - Use "Dashboard" to see execution history
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+MIT License 
